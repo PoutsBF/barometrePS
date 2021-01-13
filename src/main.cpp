@@ -40,7 +40,10 @@ extern const unsigned char lilygo[];
 
 #define BUTTON_PIN 39
 
-    GxIO_Class io(SPI, /*CS=5*/ ELINK_SS, /*DC=*/ELINK_DC, /*RST=*/ELINK_RESET);
+#define TIME_TO_SLEEP  ( 15 * 60 )
+#define uS_TO_S_FACTOR 1000000
+
+GxIO_Class io(SPI, /*CS=5*/ ELINK_SS, /*DC=*/ELINK_DC, /*RST=*/ELINK_RESET);
 GxEPD_Class display(io, /*RST=*/ELINK_RESET, /*BUSY=*/ELINK_BUSY);
 
 SPIClass sdSPI(VSPI);
@@ -50,36 +53,71 @@ int startX = 0, startY = 0;
 Adafruit_BMP085 bmp;
 
 void setup_init();
-void wake_up();
+void affichage_pression();
 
 void setup()
 {
+    esp_sleep_wakeup_cause_t wakeup_reason;
 
-  //------------ la suite doit être nettoyée
-    display.print("pression : ");
-    int32_t pression = bmp.readPressure();
-    display.setCursor(150, 91);
-    pression /= 100;
-    display.print(pression);
-    pression -= 950;
-    pression <<= 1;
-    pression /= 3;
+    wakeup_reason = esp_sleep_get_wakeup_cause();
 
-    display.drawLine(90, 90, posAiguille[pression][0], posAiguille[pression][1], GxEPD_BLACK);
+    setup_init();
 
-    display.setCursor(40, 111);
-    display.println("Martin Lepoutere");   
+    switch (wakeup_reason)
+    {
+        case ESP_SLEEP_WAKEUP_EXT0: Serial.println("Wakeup caused by external signal using RTC_IO"); break;
+        case ESP_SLEEP_WAKEUP_EXT1: Serial.println("Wakeup caused by external signal using RTC_CNTL"); break;
+        case ESP_SLEEP_WAKEUP_TIMER: Serial.println("Wakeup caused by timer"); break;
+        case ESP_SLEEP_WAKEUP_TOUCHPAD: Serial.println("Wakeup caused by touchpad"); break;
+        case ESP_SLEEP_WAKEUP_ULP: Serial.println("Wakeup caused by ULP program"); break;
+        default: 
+        {
+          Serial.printf("Wakeup was not caused by deep sleep: %d\n", wakeup_reason);
+        } break;
+    }
 
-    display.update();
+    affichage_pression();
+    //------------ la suite doit être nettoyée
 
     // goto sleep
-    esp_sleep_enable_ext0_wakeup((gpio_num_t)BUTTON_PIN, LOW);
+//    esp_sleep_enable_ext0_wakeup((gpio_num_t)BUTTON_PIN, LOW);
+    esp_sleep_enable_timer_wakeup((uint64_t) (TIME_TO_SLEEP * uS_TO_S_FACTOR));
+    Serial.printf("Setup ESP32 to sleep for every %d Seconds", TIME_TO_SLEEP);
 
-    esp_deep_sleep_start();
 }
 
 void loop()
 {
+    static int32_t pression_pre = 0;
+    int32_t pression = bmp.readPressure() / 100;
+
+    Serial.println("lecture...");
+
+    if(pression != pression_pre)
+    {
+        pression_pre = pression;
+        display.drawBitmap(lilygo, startX, startY, bmpWidth, bmpHeight, GxEPD_BLACK);
+
+        //    display.setTextColor(GxEPD_BLACK);
+        display.setCursor(150, 75);
+        display.print("pression : ");
+        Serial.printf("Pression : %dhPa\n", pression);
+        display.setCursor(150, 91);
+        display.printf("%d hPa", pression);
+        pression -= 950;
+        pression <<= 1;
+        pression /= 3;
+
+        display.drawLine(90, 90, posAiguille[pression][0], posAiguille[pression][1], GxEPD_BLACK);
+
+        display.setCursor(40, 111);
+        display.println("Pout's Family");
+
+        display.update();
+    }
+    delay(1000);
+    Serial.flush();
+    esp_light_sleep_start();
 }
 
 void setup_init()
@@ -102,12 +140,8 @@ void setup_init()
     display.setFont(&FreeMonoBold9pt7b);
     display.setCursor(0, 0);
 }
-void wake_up()
+void affichage_pression()
 {
-    display.fillScreen(GxEPD_WHITE);
+//    display.fillScreen(GxEPD_WHITE);
 
-    display.drawBitmap(lilygo, startX, startY, bmpWidth, bmpHeight, GxEPD_BLACK);
-
-    display.setTextColor(GxEPD_BLACK);
-    display.setCursor(150, 75);
 }
