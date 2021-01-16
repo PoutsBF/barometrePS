@@ -1,10 +1,30 @@
+/******************************************************************************
+    BarometrePS                                     Stéphane Lepoutère (c) 2020
+
+    Fait
+        Lecture de la pression
+        Affichage sur écran paperScreen avec graphe si changement
+    A faire
+        Affichage de l'heure
+        Affichage tendance
+*/
+
 // Sources : http://www.lilygo.cn/prod_view.aspx?TypeId=50031&Id=1149
 
-#include <Arduino.h>
+#include <ArduinoOTA.h>
+
 // include library, include base class, make path known
 #include <wire.h>
 #include "SPI.h"
 #include <GxEPD.h>
+#include "include/time.h"
+
+// include library, gestion WIFI, fichiers systèmes et json
+#include "WifiConfig.h"
+
+#include <wifi.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 // Include capteur de pression
 #include <Adafruit_BMP085.h>
@@ -33,12 +53,8 @@ extern const unsigned char lilygo[];
 #define ELINK_RESET 16
 #define ELINK_DC 17
 
-#define SDCARD_SS 13
-#define SDCARD_CLK 14
-#define SDCARD_MOSI 15
-#define SDCARD_MISO 2
-
-#define BUTTON_PIN 39
+#define BUTTON_PIN  39
+#define LED_DBG     GPIO_NUM_22
 
 #define TIME_TO_SLEEP  ( 15 * 60 )
 #define uS_TO_S_FACTOR 1000000
@@ -50,19 +66,38 @@ SPIClass sdSPI(VSPI);
 
 int startX = 0, startY = 0;
 
+// définition du capteur de pression
 Adafruit_BMP085 bmp;
 
-void setup_init();
-void affichage_pression();
+// Définition des configuration du WIFI
+// ----- création des objets serveurs et paramètres ---
+const char *ssid = YOUR_WIFI_SSID;
+const char *password = YOUR_WIFI_PASSWD;
 
+// Configuration du serveur NTP
+const char *ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = 0;
+const int daylightOffset_sec = 3600;
+// Define NTP Client to get time
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP);
+
+// Protypes des fonctions
+void setup_init();
+void initWiFi();
+
+//-----------------------------------------------------------------------------
+// SETUP ----------------------------------------------------------------------
 void setup()
 {
+    // Lecture de l'origine du reset
     esp_sleep_wakeup_cause_t wakeup_reason;
-
     wakeup_reason = esp_sleep_get_wakeup_cause();
 
+    // Configuration du port série, du port SPI, de l'écran
     setup_init();
 
+    // affichage de l'origine du reset
     switch (wakeup_reason)
     {
         case ESP_SLEEP_WAKEUP_EXT0: Serial.println("Wakeup caused by external signal using RTC_IO"); break;
@@ -76,22 +111,31 @@ void setup()
         } break;
     }
 
-    affichage_pression();
-    //------------ la suite doit être nettoyée
-
-    // goto sleep
-//    esp_sleep_enable_ext0_wakeup((gpio_num_t)BUTTON_PIN, LOW);
+    // Configuration paramètres wake up
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)BUTTON_PIN, LOW);
     esp_sleep_enable_timer_wakeup((uint64_t) (TIME_TO_SLEEP * uS_TO_S_FACTOR));
     Serial.printf("Setup ESP32 to sleep for every %d Seconds", TIME_TO_SLEEP);
 
+    timeClient.begin();
+    timeClient.setTimeOffset(3600);
 }
 
+//-----------------------------------------------------------------------------
+// LOOP -----------------------------------------------------------------------
 void loop()
 {
     static int32_t pression_pre = 0;
-    int32_t pression = bmp.readPressure() / 100;
+//    struct tm timeinfo;
 
     Serial.println("lecture...");
+    int32_t pression = bmp.readPressure() / 100;
+
+    while (!timeClient.update())
+    {
+        timeClient.forceUpdate();
+    }
+
+    Serial.printf("%s : \n", timeClient.getFormattedTime().c_str());
 
     if(pression != pression_pre)
     {
@@ -117,21 +161,34 @@ void loop()
     }
     delay(1000);
     Serial.flush();
+
+    // Endort le wifi
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+
     esp_light_sleep_start();
+    //    WiFi.reconnect();
 }
 
 void setup_init()
 {
+    pinMode(LED_DBG, OUTPUT);
+    digitalWrite(LED_DBG, LOW);
     Serial.begin(115200);
+    Serial.setDebugOutput(false);
+
     Serial.println();
-    Serial.println("setup");
+    Serial.println("Début de la configuration...");
     SPI.begin(SPI_CLK, SPI_MISO, SPI_MOSI, ELINK_SS);
     display.init();        // enable diagnostic output on Serial
 
     if (!bmp.begin())
     {
         Serial.println("Could not find a valid BMP085 sensor, check wiring!");
-        while (1) {}
+        while (1) 
+        {
+            digitalWrite(LED_DBG, (millis() % 200) < 50);
+        }
     }
 
     display.setRotation(1);
@@ -139,9 +196,30 @@ void setup_init()
     display.setTextColor(GxEPD_BLACK);
     display.setFont(&FreeMonoBold9pt7b);
     display.setCursor(0, 0);
-}
-void affichage_pression()
-{
-//    display.fillScreen(GxEPD_WHITE);
 
+    initWiFi();
+
+    digitalWrite(LED_DBG, HIGH);
 }
+
+// ----------------------------------------------------------------------------
+// Connecting to the WiFi network
+// ----------------------------------------------------------------------------
+void initWiFi()
+{
+
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+    Serial.printf("Trying to connect [%s] ", WiFi.macAddress().c_str());
+    unsigned long tempo = millis();
+    while ((WiFi.status() != WL_CONNECTED) && ((millis() - tempo) >= 10000)) // attente max 10 secondes
+    {
+        Serial.print(".");
+        delay(500);
+    }
+    Serial.printf("\nconnecté : %s\n", WiFi.localIP().toString().c_str());
+
+    // Init and get the time
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+}
+
