@@ -11,7 +11,8 @@
 
 // Sources : http://www.lilygo.cn/prod_view.aspx?TypeId=50031&Id=1149
 
-#include <ArduinoOTA.h>
+#include <Arduino.h>
+#include <config.h>
 
 // include library, include base class, make path known
 #include <wire.h>
@@ -25,6 +26,7 @@
 #include <wifi.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+#include <time.h>
 #include <esp32Ping.h>
 
 // Include capteur de pression
@@ -40,26 +42,10 @@ extern const unsigned char lilygo[];
 //#include <Fonts/FreeMonoBold12pt7b.h>
 //#include <Fonts/FreeMonoBold18pt7b.h>
 //#include <Fonts/FreeMonoBold24pt7b.h>
-#include <Fonts/FreeMonoBold9pt7b.h>
+#include <Fonts/FreeMono9pt7b.h>
 
 #include <GxIO/GxIO.h>
 #include <GxIO/GxIO_SPI/GxIO_SPI.h>
-
-#define SPI_MOSI 23
-#define SPI_MISO -1
-#define SPI_CLK 18
-
-#define ELINK_SS 5
-#define ELINK_BUSY 4
-#define ELINK_RESET 16
-#define ELINK_DC 17
-
-#define BUTTON_PIN  39
-#define LED_DBG     GPIO_NUM_22
-
-//#define TIME_TO_SLEEP  ( 15 * 60 )
-#define TIME_TO_SLEEP (60 * 10)
-#define uS_TO_S_FACTOR 1000000
 
 GxIO_Class io(SPI, /*CS=5*/ ELINK_SS, /*DC=*/ELINK_DC, /*RST=*/ELINK_RESET);
 GxEPD_Class display(io, /*RST=*/ELINK_RESET, /*BUSY=*/ELINK_BUSY);
@@ -83,6 +69,12 @@ const int daylightOffset_sec = 3600;
 // Define NTP Client to get time
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP);
+
+const char t_jour[7][5] =
+    {"dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."};
+
+const char t_mois[12][5] =
+    {"jan.", "fev.", "mar.", "avr.", "mai ", "juin", "jui.", "aou.", "sep.", "oct.", "nov.", "dec."};
 
 // Protypes des fonctions
 void setup_init();
@@ -126,10 +118,29 @@ void setup()
 void loop()
 {
     static int32_t pression_pre = 0;
-//    struct tm timeinfo;
+    static int32_t pressions[P_ECHANTILLONS] =
+        {102000, 102000, 102000, 102000, 102000, 102000, 102000, 102000, 102000, 102000,
+         102000, 102000, 102000, 102000, 102000, 102000, 102000, 102000, 102000, 102000,
+         102000, 102000, 102000, 102000, 102000, 102000, 102000, 102000, 102000, 102000};
+    static int32_t pressions_historique[P_HISTO] =
+        {104, 104, 104, 104, 104, 104, 104, 104, 104, 104,
+          94,  94,  94,  94,  94,  94,  94,  94,  94,  94,
+          84,  84,  84,  84,  84,  84,  84,  84,  84,  84,
+          74,  74,  74,  74,  74,  74,  74,  74,  74,  74,
+          64,  64,  64,  64,  64,  64,  64,  64,  64,  64,
+          74,  74,  74,  74,  74,  74,  74,  74,  74,  74,
+          84,  84,  84,  84,  84,  84,  84,  84,  84,  84,
+          94,  94,  94,  94,  94,  94,  94,  94,  94,  94,
+          55,  55,  55,  55,  55,  55,  55,  55,  55,  55,
+         104, 104, 104, 104, 104, 104};
+    static int8_t pression_pos = 1; // première moyenne 
 
     Serial.println("lecture...");
-    int32_t pression = bmp.readPressure() / 100;
+    int32_t pression = bmp.readPressure();
+    pression_pos--;
+    pressions[pression_pos] = pression;
+
+    pression /= 100;
     Serial.printf("pression : %d\n", pression);
 
     timeClient.begin();
@@ -161,22 +172,73 @@ void loop()
         display.drawBitmap(lilygo, startX, startY, bmpWidth, bmpHeight, GxEPD_BLACK);
 
         //    display.setTextColor(GxEPD_BLACK);
-        display.setCursor(150, 75);
+        display.setCursor(155, 22);
         display.print("pression : ");
         Serial.printf("Pression : %dhPa\n", pression);
-        display.setCursor(150, 91);
-        display.printf("%d hPa", pression);
+        display.setCursor(158, 35);
+        display.printf("%4d hPa", pression);
         pression -= 950;
         pression <<= 1;
         pression /= 3;
 
         display.drawLine(90, 90, posAiguille[pression][0], posAiguille[pression][1], GxEPD_BLACK);
 
-        display.setCursor(40, 111);
-        display.println("Pout's Family");
-
-        display.update();
+        display.setCursor(95, 98);
+        display.print("Pout's");
+        display.setCursor(80, 113);
+        display.print("Family");
     }
+
+    tm var_time;
+    time_t epochTime = timeClient.getEpochTime();
+    gmtime_r(&epochTime, &var_time);
+    display.setCursor(139, 10);
+    display.printf("%s%d", t_jour[timeClient.getDay()], var_time.tm_mday);
+    display.setCursor(204, 10);
+    display.print(t_mois[var_time.tm_mon]);
+    Serial.printf("%s %d %s", t_jour[timeClient.getDay()], var_time.tm_mday, t_mois[var_time.tm_mon]);
+
+    //-------------------------------------------------------------------------
+    // Gestion de l'historique
+
+    if(pression_pos == 0)
+    {
+        // Repart l'échantillonne à 0
+        pression_pos = P_ECHANTILLONS;
+
+        // Calculer la moyenne
+        uint32_t pression_moyenne = 0;
+
+        for (uint8_t x = 0; x < P_ECHANTILLONS; x++)
+        {
+            pression_moyenne += pressions[x];
+        }
+        Serial.printf(" pression cumulée : %d", pression_moyenne);
+//        pression_moyenne >>= 5;           // A améliorer pour gérer les divisions par 2
+        pression_moyenne /= 6000;
+        Serial.printf(" / pression moyenne : %d", pression_moyenne);
+        // Transformer en position y
+        pression_moyenne = (104 - (pression_moyenne - 475));
+        Serial.printf(" / position écran : %d\n", pression_moyenne);
+
+        // Décaler le tableau d'historique et ajouter la nouvelle valeur
+        for (uint8_t x = 1; x < P_HISTO; x++)
+        {
+            pressions_historique[x - 1] = pressions_historique[x];
+        }
+        pressions_historique[0] = pression_moyenne;
+
+        // Affichage des valeurs dans le tableau, le 0 à droite
+
+        display.drawRect(151, 44, 98, 62, GxEPD_BLACK);
+        display.fillRect(152, 45, 96, 60, GxEPD_WHITE);
+        for (uint8_t x = 0; x < P_HISTO; x++)
+        {
+            display.drawLine(248 - x, pressions_historique[x], 248 - x, 104, GxEPD_BLACK);
+        }
+    }
+
+    display.update();
     delay(1000);
     Serial.println("veille...");
     Serial.flush();
@@ -228,7 +290,7 @@ void setup_init()
     display.setRotation(1);
     display.fillScreen(GxEPD_WHITE);
     display.setTextColor(GxEPD_BLACK);
-    display.setFont(&FreeMonoBold9pt7b);
+    display.setFont(&FreeMono9pt7b);
     display.setCursor(0, 0);
 
     initWiFi();
@@ -244,7 +306,7 @@ void initWiFi()
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
     Serial.printf("Trying to connect [%s] \n", WiFi.macAddress().c_str());
-    unsigned long tempo = millis();
+
     while ((WiFi.status() != WL_CONNECTED))// && ((millis() - tempo) >= 10000)) // attente max 10 secondes
     {
         Serial.print(".");
