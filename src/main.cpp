@@ -25,6 +25,7 @@
 #include <wifi.h>
 #include <NTPClient.h>
 #include <WiFiUdp.h>
+#include <esp32Ping.h>
 
 // Include capteur de pression
 #include <Adafruit_BMP085.h>
@@ -56,7 +57,8 @@ extern const unsigned char lilygo[];
 #define BUTTON_PIN  39
 #define LED_DBG     GPIO_NUM_22
 
-#define TIME_TO_SLEEP  ( 15 * 60 )
+//#define TIME_TO_SLEEP  ( 15 * 60 )
+#define TIME_TO_SLEEP (60 * 10)
 #define uS_TO_S_FACTOR 1000000
 
 GxIO_Class io(SPI, /*CS=5*/ ELINK_SS, /*DC=*/ELINK_DC, /*RST=*/ELINK_RESET);
@@ -114,9 +116,8 @@ void setup()
     // Configuration paramètres wake up
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BUTTON_PIN, LOW);
     esp_sleep_enable_timer_wakeup((uint64_t) (TIME_TO_SLEEP * uS_TO_S_FACTOR));
-    Serial.printf("Setup ESP32 to sleep for every %d Seconds", TIME_TO_SLEEP);
+    Serial.printf("Setup ESP32 to sleep for every %d Seconds\n", TIME_TO_SLEEP);
 
-    timeClient.begin();
     timeClient.setTimeOffset(3600);
 }
 
@@ -129,13 +130,30 @@ void loop()
 
     Serial.println("lecture...");
     int32_t pression = bmp.readPressure() / 100;
+    Serial.printf("pression : %d\n", pression);
+
+    timeClient.begin();
+    Serial.println("lecture de l'heure : ");
+
+    bool success = Ping.ping("192.168.0.2", 3);
+
+    if (!success)
+    {
+        Serial.println("Ping failed");
+    }
+    else
+    {
+        Serial.println("Ping succesful.");
+    }
 
     while (!timeClient.update())
     {
-        timeClient.forceUpdate();
+//        timeClient.forceUpdate();
+        Serial.print(".");
+        delay(500);
     }
 
-    Serial.printf("%s : \n", timeClient.getFormattedTime().c_str());
+    Serial.printf("\n%s : \n", timeClient.getFormattedTime().c_str());
 
     if(pression != pression_pre)
     {
@@ -160,6 +178,7 @@ void loop()
         display.update();
     }
     delay(1000);
+    Serial.println("veille...");
     Serial.flush();
 
     // Endort le wifi
@@ -167,7 +186,22 @@ void loop()
     WiFi.mode(WIFI_OFF);
 
     esp_light_sleep_start();
-    //    WiFi.reconnect();
+
+    Serial.printf("Statut WIFI : %d connecté : %d\n", WiFi.status(), WiFi.isConnected());
+
+    WiFi.mode(WIFI_STA);
+    WiFi.reconnect();
+    Serial.printf("Trying to connect [%s] \n", WiFi.macAddress().c_str());
+
+    while ((WiFi.status() != WL_CONNECTED))        // && ((millis() - tempo) >= 10000)) // attente max 10 secondes
+    {
+        Serial.print(".");
+        delay(500);
+    }
+    Serial.printf("\nconnecté : %s / %s\n", WiFi.localIP().toString().c_str(), WiFi.softAPIP().toString().c_str());
+    Serial.printf("Statut WIFI : %d connecté : %d\n", WiFi.status(), WiFi.isConnected());
+
+    timeClient.end();
 }
 
 void setup_init()
@@ -175,7 +209,7 @@ void setup_init()
     pinMode(LED_DBG, OUTPUT);
     digitalWrite(LED_DBG, LOW);
     Serial.begin(115200);
-    Serial.setDebugOutput(false);
+    Serial.setDebugOutput(true);
 
     Serial.println();
     Serial.println("Début de la configuration...");
@@ -207,17 +241,16 @@ void setup_init()
 // ----------------------------------------------------------------------------
 void initWiFi()
 {
-
     WiFi.mode(WIFI_STA);
     WiFi.begin(ssid, password);
-    Serial.printf("Trying to connect [%s] ", WiFi.macAddress().c_str());
+    Serial.printf("Trying to connect [%s] \n", WiFi.macAddress().c_str());
     unsigned long tempo = millis();
-    while ((WiFi.status() != WL_CONNECTED) && ((millis() - tempo) >= 10000)) // attente max 10 secondes
+    while ((WiFi.status() != WL_CONNECTED))// && ((millis() - tempo) >= 10000)) // attente max 10 secondes
     {
         Serial.print(".");
         delay(500);
     }
-    Serial.printf("\nconnecté : %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("\nconnecté : %s / %s\n", WiFi.localIP().toString().c_str(), WiFi.softAPIP().toString().c_str());
 
     // Init and get the time
     configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
